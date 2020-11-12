@@ -43,8 +43,8 @@
 
 static t_class *openair_tilde_class;
 
-typedef struct _openair_tilde {
-
+typedef struct _openair_tilde
+{
 	t_object x_obj;
 
 	//Buffer sizes
