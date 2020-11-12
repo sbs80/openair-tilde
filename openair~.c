@@ -39,7 +39,6 @@
 
 //This is the number
 #define FADE_OUT_LENGTH 2
-
 #define FADE_IN_LENGTH 1
 
 static t_class *openair_tilde_class;
@@ -51,10 +50,8 @@ typedef struct _openair_tilde {
 	//Buffer sizes
 	t_int buffer_block_size;
 	t_int buffer_FFT_size;
-
 	t_float scale;
 
-	
 	t_symbol *table_name, *table_name_reserve;
 	t_garray *tableObj;
 	t_word *table;
@@ -79,7 +76,6 @@ typedef struct _openair_tilde {
 
 	//Size of output buffer
 	t_int output_size;
-
 
 	//Initiate input buffer pointers
 	t_float *input_buffer;
@@ -123,23 +119,18 @@ static void openair_tilde_free(t_openair_tilde *x)
 	//destroy the fftwf plans
 	fftwf_destroy_plan ( x->plan_forward_input );
 	fftwf_destroy_plan( x->plan_backward );
+	
+	fftwf_destroy_plan(x->plan_forward_impulse);
 
-	//!!!
-	if (x->status > 1)
+ 	//for each impulse response section
+	for (p = 0; p < N_SECTIONS; p++)
 	{
-		//for each impulse response section
-		for (p = 0; p < x->n_ir_sections_reserve; p++)
-		{
-			if ( x->ir_section_fft_reserve[p] )
-			{
-				//freebytes ( x->ir_section[p], sizeof ( x->ir_section[p] ) ) ;
-				fftwf_free( x->ir_section_fft_reserve[p] );
-			}
-		}
+		//freebytes ( x->ir_section[p], sizeof ( x->ir_section[p] ) ) ;
+		fftwf_free( x->ir_section_fft_reserve[p] );
 	}
 
 	//for each impulse response section
-	for (p = 0; p < x->n_ir_sections; p++)
+	for (p = 0; p < N_SECTIONS; p++)
 	{
 		//freebytes ( x->ir_section[p], sizeof ( x->ir_section[p] ) ) ;
 		fftwf_free( x->ir_section_fft[p] );
@@ -151,22 +142,19 @@ static void openair_tilde_free(t_openair_tilde *x)
 //get and prepare the impulse response array
 static void openair_tilde_set(t_openair_tilde *x, t_symbol *s)
 {
-	
 	t_int table_pos, i, j;
-
-	//check if the impulse response has already been prepared and if so free the memory
-	if (x->status != 0) {
-		openair_tilde_free(x);
-	}
 
 	//get the table array from pd
 	x->table_name = s;
-	if ( ! (x->tableObj = (t_garray *)pd_findbyclass(x->table_name, garray_class))) {
+	if ( ! (x->tableObj = (t_garray *)pd_findbyclass(x->table_name, garray_class)))
+	{
  		if (*x->table_name->s_name) pd_error(x, "openair~: %s: table not found", x->table_name->s_name);
 		else pd_error(x, "openair~: table not found");
 		x->table = NULL;
 		x->table_size = 0;
-	} else if ( ! garray_getfloatwords(x->tableObj, &x->table_size, &x->table)) {
+	}
+	else if ( ! garray_getfloatwords(x->tableObj, &x->table_size, &x->table))
+	{
 		pd_error(x, "openair~: %s: bad template", x->table_name->s_name);
 		x->table = NULL;
 		x->table_size = 0;
@@ -180,50 +168,22 @@ static void openair_tilde_set(t_openair_tilde *x, t_symbol *s)
 	if (x->n_ir_sections > N_SECTIONS)
 		x->n_ir_sections = N_SECTIONS;
 
-
 	//prepare each impulse response section
 	for (table_pos = 0, i = 0; i < x->n_ir_sections; i++)
 	{
-		//allocate memory for the padded impulse response section
-		x->ir_section[i] =  fftwf_malloc(sizeof(t_float) * x->padded_fft_size) ;	
-
-		//complex pointer to same array
-		x->ir_section_fft[i] = (fftwf_complex *) x->ir_section[i];
-
 		//set all to zeros (for padding)
 		memset (x->ir_section[i], 0, sizeof(t_float) * x->padded_fft_size ) ;
 	
 		//fill the first part of the array with the IR section
-		for ( j = 0; j < x->buffer_block_size && table_pos < x->table_size; j++, table_pos++) {
+		for ( j = 0; j < x->buffer_block_size && table_pos < x->table_size; j++, table_pos++)
+		{
 			x->ir_section[i][j] = x->table[table_pos].w_float;
 		}
 
-		//Make FFT forward plan
-		x->plan_forward_impulse  = fftwf_plan_dft_r2c_1d( x->buffer_FFT_size, x->ir_section[i], x->ir_section_fft[i] , FFTW_MEASURE );
-
-		//execute the plan to convert impulse to frequency domain, then destroy it
-		fftwf_execute(x->plan_forward_impulse);
-		fftwf_destroy_plan(x->plan_forward_impulse);
-
+		//execute the plan to convert impulse to frequency domain with new arrays
+		fftwf_execute_dft_r2c(x->plan_forward_impulse, x->ir_section[i], x->ir_section_fft[i]);
 	}
 	
-	//allocate memory for the padded input buffer sections
-	x->input_buffer = fftwf_malloc(sizeof(t_float) * x->padded_fft_size);	
-
-	//complex pointer to the same array
-	x->input_buffer_fft = (fftwf_complex *) x->input_buffer;			
-
-	//Make FFT forward plan
-	x->plan_forward_input =  fftwf_plan_dft_r2c_1d(x->buffer_FFT_size, x->input_buffer, x->input_buffer_fft, FFTW_MEASURE);
-
-	//allocate a buffer to store the convolved sound and IFFT
-	x->convolved_ifft = fftwf_malloc(sizeof(t_float) * x->padded_fft_size);
-	x->convolved = (fftwf_complex *) x->convolved_ifft;
-	x->plan_backward = fftwf_plan_dft_c2r_1d(x->buffer_FFT_size, x->convolved, x->convolved_ifft, FFTW_MEASURE);
-
-	//set up circular output buffer
-	x->output_size = x->buffer_block_size * (N_SECTIONS + 1);
-	x->output = getbytes(sizeof(t_float) * x->output_size);
 	x->current_output_count = 0;
 	
 	//set to zero
@@ -235,37 +195,31 @@ static void openair_tilde_set(t_openair_tilde *x, t_symbol *s)
 //switch to new impulse response array
 static void openair_tilde_startswitch(t_openair_tilde *x, t_symbol *s)
 {
-
 	t_int table_pos, i, j;
 
 	//first of all need to copy the old impulse response data to the reserve memory buffers
-	
 	//for each impulse response section
 	for (i = 0; i < x->n_ir_sections; i++)
 	{
-		x->ir_section_reserve[i] =  fftwf_malloc(sizeof(t_float) * x->padded_fft_size) ;	
 
 		memcpy(x->ir_section_reserve[i], x->ir_section[i], (sizeof(t_float) * x->padded_fft_size));
-
-		x->ir_section_fft_reserve[i] = (fftwf_complex *) x->ir_section_reserve[i];
-
-		fftwf_free( x->ir_section_fft[i] );
 	}
 
 	x->n_ir_sections_reserve = x->n_ir_sections;
 
-
-	//then we need to load up the new impulse response
-
+	//then we need to load up the new impulse response from the buffer
 	//get the table array from pd
-	
+
 	x->table_name = s;
-	if ( ! (x->tableObj = (t_garray *)pd_findbyclass(x->table_name, garray_class))) {
+	if ( ! (x->tableObj = (t_garray *)pd_findbyclass(x->table_name, garray_class)))
+	{
  		if (*x->table_name->s_name) pd_error(x, "openair~: %s: table not found", x->table_name->s_name);
 		else pd_error(x, "openair~: table not found");
 		x->table = NULL;
 		x->table_size = 0;
-	} else if ( ! garray_getfloatwords(x->tableObj, &x->table_size, &x->table)) {
+	}
+	else if ( ! garray_getfloatwords(x->tableObj, &x->table_size, &x->table))
+	{
 		pd_error(x, "openair~: %s: bad template", x->table_name->s_name);
 		x->table = NULL;
 		x->table_size = 0;
@@ -280,45 +234,24 @@ static void openair_tilde_startswitch(t_openair_tilde *x, t_symbol *s)
 		x->n_ir_sections = N_SECTIONS;
 
 	//prepare each impulse response section
-	for (table_pos = 0, i = 0; i < x->n_ir_sections; i++) {
-
-		//allocate memory for the padded impulse response section
-		x->ir_section[i] =  fftwf_malloc(sizeof(t_float) * x->padded_fft_size) ;	
-
-		x->ir_section_fft[i] = (fftwf_complex *) x->ir_section[i];
-
-	
+	for (table_pos = 0, i = 0; i < x->n_ir_sections; i++)
+	{
 		memset (x->ir_section[i], 0, sizeof(t_float) * x->padded_fft_size ) ;
 	
-		for ( j = 0; j < x->buffer_block_size && table_pos < x->table_size; j++, table_pos++) {
+		for ( j = 0; j < x->buffer_block_size && table_pos < x->table_size; j++, table_pos++)
+		{
 			x->ir_section[i][j] = x->table[table_pos].w_float;
 		}
 
-		//Make FFT forward plans
-		x->plan_forward_impulse  = fftwf_plan_dft_r2c_1d( x->buffer_FFT_size, x->ir_section[i], x->ir_section_fft[i] , FFTW_ESTIMATE );
-
-		//execute the plan to convert impulse to frequency domain, then destroy it
-		fftwf_execute(x->plan_forward_impulse);
-		fftwf_destroy_plan(x->plan_forward_impulse);
-
+		fftwf_execute_dft_r2c(x->plan_forward_impulse, x->ir_section[i], x->ir_section_fft[i]);
 	}
-	
 
 	post("openair~: SWITCH! using %s in %d partitions with FFT-size %d", x->table_name->s_name, x->n_ir_sections, x->buffer_FFT_size);
-
 }
 
 //stop the switch to new impulse response array
 static void openair_tilde_stop_switch(t_openair_tilde *x)
 {
-	t_int i;
-
-	//free the memory for the reserve buffer
-	for (i = 0; i < x->n_ir_sections; i++)
-	{
-		fftwf_free( x->ir_section_fft_reserve[i] );
-	}
-
 	post("SWITCH finished");
 }
 
@@ -397,8 +330,7 @@ static t_int *openair_tilde_perform(t_int *w)
 			for (i = 0; i < x->padded_fft_size ; i++, j = (j + 1) % x->output_size)
 			{
 				x->output[j] += x->convolved_ifft[i];
-			}
-			
+			}	
 		}
 
 		x->fade_out_countdown --;
@@ -431,7 +363,6 @@ static t_int *openair_tilde_perform(t_int *w)
 				x->in_gain+=step;
 			}
 			x->fade_in_countdown --;
-
 		}
 		else
 		{
@@ -524,7 +455,8 @@ static void openair_tilde_dsp(t_openair_tilde *x, t_signal **sp)
 {
 
 	//load the impulse response, if not done already
-	if (x->status == 0) {
+	if (x->status == 0)
+	{
 		openair_tilde_set(x, x->table_name);
 		x->status = 1;
 	}
@@ -539,7 +471,8 @@ static void *openair_tilde_new(t_symbol *s, int argc, t_atom *argv)
 
 	outlet_new(&x->x_obj, gensym("signal"));
 
-	if (argc != 2) {
+	if (argc != 2)
+	{
 		post("argc = %d", argc);
 		error("openair~: usage: [openair~ <arrayname> <blocksize>] \n\t - blocksize must be the same as the blocksize of the patch or subpatch, if different to the main patch.");
 		return NULL;
@@ -565,8 +498,44 @@ static void *openair_tilde_new(t_symbol *s, int argc, t_atom *argv)
 	//set switch pending to 0
 	x->switch_pending = 0;
 
-	return (x);
+	
+	t_int table_pos, i;
 
+	//allocate memory for the padded impulse response section
+	for (table_pos = 0, i = 0; i < N_SECTIONS; i++)
+	{
+		x->ir_section[i] = fftwf_malloc(sizeof(t_float) * x->padded_fft_size) ;
+		
+		//complex pointer to same array
+		x->ir_section_fft[i] = (fftwf_complex *) x->ir_section[i];
+
+		//allocate memory for reserve ir
+		x->ir_section_reserve[i] =  fftwf_malloc(sizeof(t_float) * x->padded_fft_size);
+		x->ir_section_fft_reserve[i] = (fftwf_complex *) x->ir_section_reserve[i];
+	}
+
+	//allocate memory for the padded input buffer sections
+	x->input_buffer = fftwf_malloc(sizeof(t_float) * x->padded_fft_size);	
+
+	//complex pointer to the same array
+	x->input_buffer_fft = (fftwf_complex *) x->input_buffer;			
+
+	//Make FFT forward plan
+	x->plan_forward_input =  fftwf_plan_dft_r2c_1d(x->buffer_FFT_size, x->input_buffer, x->input_buffer_fft, FFTW_MEASURE);
+
+	//Make FFT forward plans
+	x->plan_forward_impulse  = fftwf_plan_dft_r2c_1d( x->buffer_FFT_size, x->ir_section[0], x->ir_section_fft[0] , FFTW_ESTIMATE );
+
+	//allocate a buffer to store the convolved sound and IFFT
+	x->convolved_ifft = fftwf_malloc(sizeof(t_float) * x->padded_fft_size);
+	x->convolved = (fftwf_complex *) x->convolved_ifft;
+	x->plan_backward = fftwf_plan_dft_c2r_1d(x->buffer_FFT_size, x->convolved, x->convolved_ifft, FFTW_MEASURE);
+
+	//set up circular output buffer
+	x->output_size = x->buffer_block_size * (N_SECTIONS + 1);
+	x->output = getbytes(sizeof(t_float) * x->output_size);
+	
+	return (x);
 }
 
 void openair_tilde_setup(void)
@@ -578,6 +547,4 @@ void openair_tilde_setup(void)
 
 	CLASS_MAINSIGNALIN(openair_tilde_class, t_openair_tilde, f);
 }
-
-
 
