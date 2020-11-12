@@ -35,7 +35,7 @@
 #define N_SECTIONS 256
 
 //This scaling factor might be needed to avoid clipping in the convolved output
-#define SCALEFACTOR 2
+#define SCALEFACTOR 4
 
 //This is the number
 #define FADE_OUT_LENGTH 2
